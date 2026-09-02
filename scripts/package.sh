@@ -444,6 +444,33 @@ if [[ "$TARGET_ARCH" == "x86_64" ]]; then
     install_onnx_gpu_variant cuda-12 cuda
     install_onnx_gpu_variant cuda-13 cuda libonnxruntime.so.1.24.4
     install_onnx_gpu_variant migraphx migraphx
+
+    # OpenVINO (Whisper on Intel CPU / iGPU / NPU). Same co-location rule as
+    # the ONNX GPU variants, for a different reason: the crate dlopens
+    # libopenvino_genai_c.so by the path in `[openvino] library`, and that
+    # library carries RPATH $ORIGIN so its two siblings resolve from whatever
+    # directory it sits in. Splitting them up breaks the load with an opaque
+    # UnknownException.
+    #
+    # libopenvino_genai.so keeps its SONAME (.2630) because that is the name
+    # recorded in the C API's DT_NEEDED; the short name is never looked up.
+    install_openvino_variant() {
+        local src="${RELEASE_DIR}/voxtype-${VERSION}-linux-x86_64-openvino"
+        if [[ ! -f "$src" ]]; then
+            return 0
+        fi
+        local subdir="$STAGING/usr/lib/voxtype/openvino"
+        mkdir -p "$subdir"
+        cp "$src" "$subdir/voxtype-openvino"
+        chmod 755 "$subdir/voxtype-openvino"
+        for lib in libopenvino_genai_c.so libopenvino_genai.so.2630 libopenvino_tokenizers.so; do
+            cp "${src}.${lib}" "$subdir/${lib}"
+            chmod 644 "$subdir/${lib}"
+        done
+        ln -sf "openvino/voxtype-openvino" \
+            "$STAGING/usr/lib/voxtype/voxtype-openvino"
+    }
+    install_openvino_variant
     # Legacy compat symlink for users with scripts referencing the old
     # voxtype-onnx-rocm name. The AMD GPU EP changed from ROCm to MIGraphX
     # in v0.7.0; ship one release with both names. Drop in v0.8.0.

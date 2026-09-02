@@ -1581,12 +1581,16 @@ device = "NPU"
 **Default:** unset
 **Required:** No
 
-Full path to `libopenvino_genai_c.so`, for when it is not somewhere the dynamic linker already searches. Leave unset if the library is installed system-wide or reachable via `LD_LIBRARY_PATH`.
+Full path to `libopenvino_genai_c.so`.
+
+Usually unnecessary. The engine looks in three places, in order: this setting, the dynamic linker's own search (which includes `LD_LIBRARY_PATH` and the system directories), and `/usr/lib/voxtype/openvino/`, where the deb and rpm install it. Package users never need to set it.
+
+Set it when the libraries live somewhere else — a manual build, or several versions side by side. An explicit path wins over the other two, so it also serves to pin a specific copy.
 
 **Example:**
 ```toml
 [openvino]
-library = "/usr/lib/voxtype/openvino/libopenvino_genai_c.so"
+library = "/opt/openvino-genai/lib/libopenvino_genai_c.so"
 ```
 
 ### cache_dir

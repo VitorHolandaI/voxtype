@@ -27,22 +27,45 @@ use crate::config::OpenVinoConfig;
 /// Result of the one-and-only attempt to open the GenAI shared libraries.
 static LIBRARY: OnceLock<Result<(), String>> = OnceLock::new();
 
+/// Where the packaged install puts the GenAI libraries. Not on the loader's
+/// default search path, so it has to be tried explicitly — otherwise every
+/// package user would have to set `[openvino] library` by hand.
+const PACKAGED_LIBRARY: &str = "/usr/lib/voxtype/openvino/libopenvino_genai_c.so";
+
 /// Open the GenAI shared libraries once per process.
 ///
-/// Tries the finder's own search first (which honours `LD_LIBRARY_PATH` and
-/// the usual system directories), then the explicit path from config.
+/// Order: the config's explicit path, then the finder's own search (which
+/// honours `LD_LIBRARY_PATH` and the system directories), then the location
+/// the deb/rpm use. The explicit path goes first so that setting it always
+/// wins over a stale copy somewhere else on the system.
 fn load_library(explicit: Option<&str>) -> Result<(), TranscribeError> {
-    let outcome = LIBRARY.get_or_init(|| match openvino_genai::load() {
-        Ok(()) => Ok(()),
-        Err(auto_err) => match explicit {
-            Some(path) => openvino_genai::load_from(path).map_err(|e| {
-                format!("automatic search failed ({auto_err}); {path} also failed ({e})")
-            }),
-            None => Err(format!(
-                "{auto_err}. Set [openvino] library to the full path of \
-                 libopenvino_genai_c.so, or put it on LD_LIBRARY_PATH."
-            )),
-        },
+    let outcome = LIBRARY.get_or_init(|| {
+        let mut tried: Vec<String> = Vec::new();
+
+        if let Some(path) = explicit {
+            match openvino_genai::load_from(path) {
+                Ok(()) => return Ok(()),
+                Err(e) => tried.push(format!("[openvino] library = {path}: {e}")),
+            }
+        }
+
+        match openvino_genai::load() {
+            Ok(()) => return Ok(()),
+            Err(e) => tried.push(format!("automatic search: {e}")),
+        }
+
+        if explicit != Some(PACKAGED_LIBRARY) && std::path::Path::new(PACKAGED_LIBRARY).exists() {
+            match openvino_genai::load_from(PACKAGED_LIBRARY) {
+                Ok(()) => return Ok(()),
+                Err(e) => tried.push(format!("{PACKAGED_LIBRARY}: {e}")),
+            }
+        }
+
+        Err(format!(
+            "{}. Set [openvino] library to the full path of \
+             libopenvino_genai_c.so, or put its directory on LD_LIBRARY_PATH.",
+            tried.join("; ")
+        ))
     });
 
     outcome.clone().map_err(|e| {
