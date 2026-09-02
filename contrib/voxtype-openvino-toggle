@@ -1,0 +1,110 @@
+#!/bin/bash
+# voxtype-openvino-toggle
+#
+# Swap the running voxtype daemon between the packaged install and the local
+# OpenVINO build, and back. Only one daemon can run at a time — they would
+# fight over the hotkey and over /run/user/$UID/voxtype/voxtype.lock — so this
+# stops one before starting the other.
+#
+# The experiment config is derived from the user's real config on every
+# switch, so hotkey, audio and output settings stay whatever they already are;
+# only the engine section is replaced.
+#
+# Nothing here touches /usr/bin/voxtype or the systemd unit. Switching back
+# is `systemctl --user start voxtype`, which this script does for you.
+
+set -euo pipefail
+
+REPO="${VOXTYPE_OPENVINO_REPO:-$HOME/contributing/voxtype}"
+BIN="${VOXTYPE_OPENVINO_BIN:-$REPO/target/debug/voxtype}"
+WORKER="${VOXTYPE_OPENVINO_WORKER:-$REPO/contrib/openvino_worker.py}"
+BASE="${VOXTYPE_OPENVINO_BASE:-$HOME/.cache/voxtype-openvino-test}"
+PYTHON="${VOXTYPE_OPENVINO_PYTHON:-$BASE/venv/bin/python}"
+MODEL="${VOXTYPE_OPENVINO_MODEL:-$BASE/whisper-base.en-fp16-ov}"
+DEVICE="${VOXTYPE_OPENVINO_DEVICE:-GPU}"
+
+RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/voxtype-openvino"
+PIDFILE="$RUNDIR/pid"
+LOGFILE="$RUNDIR/log"
+CONFIG="$RUNDIR/config.toml"
+USER_CONFIG="${VOXTYPE_CONFIG:-$HOME/.config/voxtype/config.toml}"
+
+say() {
+    notify-send -a Voxtype "Voxtype OpenVINO" "$1" 2>/dev/null || true
+    echo "$1"
+}
+
+die() {
+    notify-send -u critical -a Voxtype "Voxtype OpenVINO" "$1" 2>/dev/null || true
+    echo "$1" >&2
+    exit 1
+}
+
+running() {
+    [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null
+}
+
+stop_experiment() {
+    if running; then
+        kill "$(cat "$PIDFILE")" 2>/dev/null || true
+        # Give the worker a moment to shut down before the daemon goes.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            running || break
+            sleep 0.3
+        done
+        running && kill -9 "$(cat "$PIDFILE")" 2>/dev/null || true
+    fi
+    rm -f "$PIDFILE"
+}
+
+build_config() {
+    [ -f "$USER_CONFIG" ] || die "config not found: $USER_CONFIG"
+    mkdir -p "$RUNDIR"
+    # Drop any existing engine line and openvino section, then re-add ours.
+    awk '
+        /^[[:space:]]*\[openvino\][[:space:]]*$/ { skip = 1; next }
+        /^[[:space:]]*\[/ { skip = 0 }
+        skip { next }
+        /^[[:space:]]*engine[[:space:]]*=/ { next }
+        { print }
+    ' "$USER_CONFIG" > "$CONFIG"
+
+    # `engine` is a top-level key, so it has to land before the first table.
+    {
+        echo "engine = \"openvino\""
+        cat "$CONFIG"
+        echo
+        echo "[openvino]"
+        echo "model = \"$MODEL\""
+        echo "device = \"$DEVICE\""
+        echo "python = \"$PYTHON\""
+        echo "worker = \"$WORKER\""
+    } > "$CONFIG.tmp"
+    mv "$CONFIG.tmp" "$CONFIG"
+}
+
+if running; then
+    stop_experiment
+    systemctl --user start voxtype
+    say "Back to the packaged voxtype (whisper)."
+    exit 0
+fi
+
+for path in "$BIN" "$WORKER" "$PYTHON" "$MODEL"; do
+    [ -e "$path" ] || die "missing: $path"
+done
+
+build_config
+systemctl --user stop voxtype 2>/dev/null || true
+mkdir -p "$RUNDIR"
+
+setsid "$BIN" -c "$CONFIG" daemon >"$LOGFILE" 2>&1 &
+echo $! > "$PIDFILE"
+
+sleep 2
+if running; then
+    say "OpenVINO daemon on $DEVICE. Run again to switch back."
+else
+    systemctl --user start voxtype
+    die "OpenVINO daemon failed to start. Log: $LOGFILE"
+fi

@@ -1,0 +1,144 @@
+#!/bin/bash
+# voxtype-dev — run the local build fully isolated from the packaged install.
+#
+# The daemon derives its lock, state file and audio socket from
+# $XDG_RUNTIME_DIR/voxtype (src/config/root.rs::runtime_dir), with no config
+# knob to move them. Two daemons sharing that directory fight over the lock,
+# so this wrapper hands the dev build a private XDG_RUNTIME_DIR that symlinks
+# everything else — PipeWire, Wayland, D-Bus — back to the real one.
+#
+# Result: the packaged daemon (F9) and the dev daemon (F10) run side by side
+# and never touch each other's state.
+#
+#   voxtype-dev daemon              start the dev daemon
+#   voxtype-dev configure           TUI, editing the dev config only
+#   voxtype-dev record start|stop   drive the dev daemon
+#   voxtype-dev status              dev daemon status
+#
+# Everything is scoped to the dev config at ~/.config/voxtype/config-dev.toml.
+# The packaged install, its config and its systemd unit are never touched.
+
+set -euo pipefail
+
+REPO="${VOXTYPE_DEV_REPO:-$HOME/contributing/voxtype}"
+BIN="${VOXTYPE_DEV_BIN:-$REPO/target/debug/voxtype}"
+CONFIG="${VOXTYPE_DEV_CONFIG:-$HOME/.config/voxtype/config-dev.toml}"
+
+GENAI_LIB="${VOXTYPE_GENAI_LIB:-$HOME/.local/lib/voxtype-openvino}"
+REAL_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+DEV_RUN="$REAL_RUN/voxtype-dev"
+
+FEATURES="${VOXTYPE_DEV_FEATURES:-openvino}"
+
+# `cargo test` and `cargo clippy` without --features rebuild target/debug and
+# silently drop the feature, after which the daemon refuses to start with
+# "not compiled with --features openvino". Check and repair rather than let
+# that surface as a mystery an hour later.
+ensure_built() {
+    if [ -x "$BIN" ] && "$BIN" info variants 2>/dev/null | grep -q "Features:.*$FEATURES"; then
+        return 0
+    fi
+    echo "voxtype-dev: rebuilding with --features $FEATURES" >&2
+    ( cd "$REPO" && cargo build --features "$FEATURES" ) >&2 || {
+        echo "voxtype-dev: build failed" >&2
+        exit 1
+    }
+}
+
+ensure_built
+
+# --- private runtime dir -----------------------------------------------------
+# Mirror the real runtime dir as symlinks so PipeWire, Wayland and D-Bus keep
+# working, but keep `voxtype/` local so the lock and sockets are ours. The
+# farm is refreshed on every call: sockets come and go across sessions.
+mkdir -p "$DEV_RUN/voxtype"
+for entry in "$REAL_RUN"/*; do
+    name="$(basename "$entry")"
+    case "$name" in
+        voxtype | voxtype-dev | voxtype-openvino) continue ;;
+    esac
+    ln -sfn "$entry" "$DEV_RUN/$name"
+done
+
+# --- dev config --------------------------------------------------------------
+# Seeded once from the real config so hotkey/audio/output match what you
+# already use, then left alone — `voxtype-dev configure` edits this file and
+# the edits must survive.
+if [ ! -f "$CONFIG" ]; then
+    REAL_CONFIG="${VOXTYPE_REAL_CONFIG:-$HOME/.config/voxtype/config.toml}"
+    mkdir -p "$(dirname "$CONFIG")"
+    if [ -f "$REAL_CONFIG" ]; then
+        # Drop the engine key and any [openvino] block, then append ours.
+        awk '
+            /^[[:space:]]*\[openvino\][[:space:]]*$/ { skip = 1; next }
+            /^[[:space:]]*\[/ { skip = 0 }
+            skip { next }
+            /^[[:space:]]*engine[[:space:]]*=/ { next }
+            { print }
+        ' "$REAL_CONFIG" > "$CONFIG.body"
+    else
+        : > "$CONFIG.body"
+    fi
+
+    BASE="${VOXTYPE_OPENVINO_BASE:-$HOME/.cache/voxtype-openvino-test}"
+    {
+        echo "# voxtype dev config — the packaged install never reads this file."
+        echo "engine = \"openvino\""
+        cat "$CONFIG.body"
+        echo
+        echo "[openvino]"
+        echo "model = \"${VOXTYPE_OPENVINO_MODEL:-$BASE/whisper-base.en-fp16-ov}\""
+        echo "device = \"${VOXTYPE_OPENVINO_DEVICE:-GPU}\""
+        echo "library = \"$GENAI_LIB/libopenvino_genai_c.so\""
+    } > "$CONFIG"
+    rm -f "$CONFIG.body"
+
+    # The evdev listener needs the `input` group. F10 drives this daemon
+    # through `record` instead, exactly like Omarchy's F9 binding drives the
+    # packaged one, so the listener is turned off rather than left to fail.
+    if grep -q '^\[hotkey\]' "$CONFIG"; then
+        awk '
+            /^[[:space:]]*\[hotkey\][[:space:]]*$/ { print; inhot = 1; next }
+            /^[[:space:]]*\[/ && inhot {
+                if (!done) { print "enabled = false"; done = 1 }
+                inhot = 0
+            }
+            inhot && /^[[:space:]]*enabled[[:space:]]*=/ {
+                print "enabled = false"; done = 1; next
+            }
+            { print }
+            END { if (inhot && !done) print "enabled = false" }
+        ' "$CONFIG" > "$CONFIG.tmp" && mv "$CONFIG.tmp" "$CONFIG"
+    else
+        printf '\n[hotkey]\nenabled = false\n' >> "$CONFIG"
+    fi
+    echo "voxtype-dev: seeded $CONFIG" >&2
+fi
+
+# The GenAI libraries are not on the system loader path; libopenvino_genai.so
+# and libopenvino_tokenizers.so are found relative to it, so the directory has
+# to be on LD_LIBRARY_PATH even though `library` names the C API explicitly.
+export LD_LIBRARY_PATH="$GENAI_LIB${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export XDG_RUNTIME_DIR="$DEV_RUN"
+
+# `restart` is ours, not the binary's. The TUI's own restart-on-quit runs
+# `systemctl --user restart voxtype`, which reaches the packaged daemon and
+# leaves this one on stale config — so after editing here, restart with this.
+if [ "${1:-}" = "restart" ]; then
+    pkill -f "$BIN -c $CONFIG daemon" 2>/dev/null || true
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        pgrep -f "$BIN -c $CONFIG daemon" >/dev/null 2>&1 || break
+        sleep 0.3
+    done
+    setsid "$BIN" -c "$CONFIG" daemon > "$DEV_RUN/daemon.log" 2>&1 &
+    sleep 2
+    if pgrep -f "$BIN -c $CONFIG daemon" >/dev/null 2>&1; then
+        echo "voxtype-dev: daemon restarted (log: $DEV_RUN/daemon.log)"
+    else
+        echo "voxtype-dev: daemon failed to start, see $DEV_RUN/daemon.log" >&2
+        exit 1
+    fi
+    exit 0
+fi
+
+exec "$BIN" -c "$CONFIG" "$@"

@@ -1,0 +1,144 @@
+# Build environment for the voxtype OpenVINO binary
+#
+# The `openvino` engine runs Whisper models in OpenVINO IR on Intel CPU /
+# iGPU / NPU, through the `openvino-genai` Rust crate. That crate dlopens
+# `libopenvino_genai_c.so`, and no distribution packages it: OpenVINO itself
+# is packaged (Intel's APT repo, Arch `extra`, ...) but `openvino.genai` —
+# where WhisperPipeline lives — is not. The pip wheel ships only the C++ core
+# and the Python binding, not the C API.
+#
+# So this Dockerfile does what Dockerfile.onnx-migraphx does for the MIGraphX
+# provider: builds the missing libraries from source and hands them to
+# scripts/package.sh to install beside the binary.
+#
+# Three libraries have to ship together:
+#   libopenvino_genai_c.so       the C API the crate dlopens
+#   libopenvino_genai.so         the C++ core it wraps
+#   libopenvino_tokenizers.so    the tokenizer plugin WhisperPipeline needs
+#
+# Leaving out the third makes WhisperPipeline construction fail with an opaque
+# `UnknownException`, so the verify step below checks for all three.
+#
+# The OpenVINO runtime itself is NOT bundled: it stays a host dependency, the
+# same way the Vulkan binary expects libvulkan.so.1 from the distro.
+#
+# Usage:
+#   docker build -f Dockerfile.openvino -t voxtype-openvino-builder .
+#   docker run --rm -v $(pwd)/releases:/output voxtype-openvino-builder
+#
+# Ubuntu 24.04 to cap glibc at 2.39, matching the other ONNX variants.
+FROM ubuntu:24.04
+
+ARG VERSION=1.0.1
+ARG OPENVINO_VERSION=2026.3.0
+ARG OPENVINO_BUILD=2026.3.0.22451
+ARG GENAI_TAG=2026.3.0.0
+ARG DEBIAN_FRONTEND=noninteractive
+
+ENV VERSION=${VERSION}
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    ca-certificates \
+    gnupg \
+    build-essential \
+    cmake \
+    ninja-build \
+    pkg-config \
+    libasound2-dev \
+    libx11-dev \
+    libxi-dev \
+    libxtst-dev \
+    libgtk-3-dev \
+    libglib2.0-dev \
+    libappindicator3-dev \
+    libssl-dev \
+    git \
+    binutils \
+    python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Intel's OpenVINO APT repository. Pinning the exact build keeps the runtime
+# the GenAI libraries are compiled against identical to the one users install.
+RUN curl -fsSL https://apt.repos.intel.com/intel-gpg-keys/GPG-PUB-KEY-INTEL-SW-PRODUCTS.PUB \
+        | gpg --dearmor -o /usr/share/keyrings/intel-sw-products.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/intel-sw-products.gpg] https://apt.repos.intel.com/openvino ubuntu24 main" \
+        > /etc/apt/sources.list.d/intel-openvino.list \
+    && apt-get update && apt-get install -y \
+        libopenvino-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+        libopenvino-dev-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+        libopenvino-auto-plugin-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+        libopenvino-auto-batch-plugin-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+        libopenvino-hetero-plugin-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+        libopenvino-intel-cpu-plugin-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+        libopenvino-intel-gpu-plugin-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+        libopenvino-intel-npu-plugin-${OPENVINO_VERSION}=${OPENVINO_BUILD} \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+WORKDIR /build
+
+# Build openvino.genai against the OpenVINO installed above.
+#
+# The sed is a real upstream bug, not a workaround for this image: in C++20
+# `u8"..."` is char8_t[], which std::string cannot be constructed from, and
+# the file assigns one directly instead of going through the project's own
+# `as_utf8()` helper. Compilers defaulting to C++20 (GCC 13+ on Ubuntu 24.04,
+# GCC 16 on Arch) fail on it. Drop the guard once upstream fixes the line.
+RUN git clone --depth 1 --branch ${GENAI_TAG} --recurse-submodules --shallow-submodules \
+        https://github.com/openvinotoolkit/openvino.genai.git /build/openvino.genai \
+    && cd /build/openvino.genai \
+    && sed -i 's|const std::string replacement_char = u8"|const std::string replacement_char = "|' \
+        src/cpp/src/whisper/word_level_timestamps.cpp \
+    && cmake -B build -S . -G Ninja \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DENABLE_PYTHON=OFF \
+        -DENABLE_JS=OFF \
+        -DENABLE_SAMPLES=OFF \
+        -DENABLE_TESTS=OFF \
+        -DENABLE_TOOLS=OFF \
+    && cmake --build build --target openvino_genai_c --parallel
+
+# Collect the three libraries. `cp -L` because the build tree uses SONAME
+# symlinks and package.sh wants real files.
+RUN mkdir -p /tmp/openvino-libs \
+    && cp -L /build/openvino.genai/build/src/c/libopenvino_genai_c.so /tmp/openvino-libs/ \
+    && cp -L /build/openvino.genai/build/openvino_genai/libopenvino_genai.so /tmp/openvino-libs/ \
+    && cp -L /build/openvino.genai/build/openvino_genai/libopenvino_tokenizers.so /tmp/openvino-libs/
+
+# Copy voxtype source and build
+COPY . /build/voxtype
+WORKDIR /build/voxtype
+
+# LTO off for build time, matching the other ONNX Dockerfiles. The openvino
+# feature adds no C/C++ of its own — the crate links at run time — so this is
+# a plain Rust build.
+RUN cargo build --release \
+        --features openvino \
+        --config 'profile.release.lto=false' \
+        --config 'profile.release.codegen-units=8' \
+    && cp target/release/voxtype /tmp/voxtype-openvino
+
+RUN echo "=== Verifying OpenVINO binary ===" \
+    && /tmp/voxtype-openvino --version \
+    && /tmp/voxtype-openvino info variants | grep -q "Features:.*openvino" \
+    && echo "=== Binary size ===" \
+    && ls -lh /tmp/voxtype-openvino \
+    && echo "=== Companion .so files (all three required) ===" \
+    && ls -lh /tmp/openvino-libs/ \
+    && test -f /tmp/openvino-libs/libopenvino_genai_c.so \
+    && test -f /tmp/openvino-libs/libopenvino_genai.so \
+    && test -f /tmp/openvino-libs/libopenvino_tokenizers.so \
+    && echo "=== Max glibc (must be <= 2.39 for Ubuntu 24.04) ===" \
+    && objdump -T /tmp/voxtype-openvino | grep -oP 'GLIBC_\d+\.\d+' | sort -t. -k2 -n -u | tail -1
+
+CMD mkdir -p /output \
+    && cp /tmp/voxtype-openvino /output/voxtype-${VERSION}-linux-x86_64-openvino \
+    && cp /tmp/openvino-libs/libopenvino_genai_c.so /output/voxtype-${VERSION}-linux-x86_64-openvino.libopenvino_genai_c.so \
+    && cp /tmp/openvino-libs/libopenvino_genai.so /output/voxtype-${VERSION}-linux-x86_64-openvino.libopenvino_genai.so \
+    && cp /tmp/openvino-libs/libopenvino_tokenizers.so /output/voxtype-${VERSION}-linux-x86_64-openvino.libopenvino_tokenizers.so \
+    && echo "Output:" \
+    && ls -la /output/voxtype-${VERSION}-linux-x86_64-openvino*

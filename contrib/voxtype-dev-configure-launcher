@@ -1,0 +1,53 @@
+#!/bin/sh
+# voxtype-dev-configure-launcher
+#
+# Same job as the packaged voxtype-configure-launcher — find a terminal and
+# open the TUI in it — but pointed at the local build and the dev config, so
+# editing here never touches ~/.config/voxtype/config.toml.
+#
+# Window class is `voxtype-dev` rather than `voxtype`, so the packaged
+# launcher's compositor rules and this one don't collide.
+
+set -eu
+
+DEV="${VOXTYPE_DEV:-$HOME/contributing/voxtype/contrib/voxtype-dev}"
+
+[ -x "$DEV" ] || {
+    notify-send -u critical -a Voxtype "Voxtype Dev Configuration" \
+        "voxtype-dev not found at $DEV" 2>/dev/null || true
+    echo "voxtype-dev-configure-launcher: not found: $DEV" >&2
+    exit 1
+}
+
+candidates="${TERMINAL:-} ghostty alacritty kitty foot wezterm konsole gnome-terminal xterm xfce4-terminal"
+term=""
+for c in $candidates; do
+    [ -z "$c" ] && continue
+    if command -v "$c" >/dev/null 2>&1; then
+        term="$c"
+        break
+    fi
+done
+
+if [ -z "$term" ]; then
+    notify-send -a Voxtype "Voxtype Dev Configuration" \
+        "No terminal emulator found." 2>/dev/null || true
+    exit 1
+fi
+
+if command -v hyprctl >/dev/null 2>&1; then
+    hyprctl keyword windowrulev2 'float, class:^(voxtype-dev)$' >/dev/null 2>&1 || true
+    hyprctl keyword windowrulev2 'size 1100 700, class:^(voxtype-dev)$' >/dev/null 2>&1 || true
+    hyprctl keyword windowrulev2 'center, class:^(voxtype-dev)$' >/dev/null 2>&1 || true
+fi
+
+case "$term" in
+    ghostty)         exec "$term" --class=voxtype-dev -e "$DEV" configure ;;
+    alacritty)       exec "$term" --class voxtype-dev -e "$DEV" configure ;;
+    kitty)           exec "$term" --class voxtype-dev "$DEV" configure ;;
+    foot)            exec "$term" --app-id=voxtype-dev "$DEV" configure ;;
+    wezterm)         exec "$term" start --class voxtype-dev -- "$DEV" configure ;;
+    gnome-terminal)  exec "$term" -- "$DEV" configure ;;
+    xfce4-terminal)  exec "$term" --geometry 110x34 --command="$DEV configure" ;;
+    *)               exec "$term" -e "$DEV" configure ;;
+esac
