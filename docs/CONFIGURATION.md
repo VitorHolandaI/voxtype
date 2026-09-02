@@ -1486,6 +1486,174 @@ The prebuilt `voxtype-*-onnx-*` release binaries already include `cohere`, so us
 
 ---
 
+## [openvino]
+
+Configuration for the OpenVINO GenAI speech-to-text engine. This section is only used when `engine = "openvino"`.
+
+This engine runs Whisper models in OpenVINO IR format on Intel hardware — CPU, integrated GPU, or NPU. It is the same Whisper you get from the `whisper` engine, executed by Intel's runtime instead of whisper.cpp. On an Intel iGPU that is measurably faster; see the table below.
+
+Only Whisper-family models work here. OpenVINO GenAI exposes a single ASR pipeline (`WhisperPipeline`), so Parakeet, SenseVoice and the other ONNX engines are not reachable through it.
+
+**Requires:** `cargo build --features openvino`, plus the runtime libraries described in *Runtime libraries* below.
+
+### model
+
+**Type:** String
+**Default:** `"whisper-base.en-fp16-ov"`
+**Required:** Yes
+
+The model to use. Either a name (looked up in `~/.local/share/voxtype/models/<name>/`) or an absolute path to a directory holding an OpenVINO IR export.
+
+An IR model directory contains four `.xml` + `.bin` pairs: encoder, decoder, tokenizer and detokenizer.
+
+**Available models** (from the `OpenVINO` organisation on Hugging Face):
+
+| Model | Precision | Size | Notes |
+|-------|-----------|------|-------|
+| `whisper-base.en-fp16-ov` | FP16 | ~148 MB | English-only, recommended starting point |
+| `whisper-base.en-int8-ov` | INT8 | ~81 MB | Smaller, English-only |
+| `whisper-base-fp16-ov` | FP16 | ~148 MB | Multilingual |
+| `whisper-base-int8-ov` | INT8 | ~81 MB | Multilingual, smallest |
+| `whisper-large-v3-turbo-fp16-ov` | FP16 | ~1.6 GB | Best accuracy; largest speedup on iGPU |
+| `whisper-large-v3-turbo-int8-ov` | INT8 | ~0.8 GB | |
+
+`distil-whisper` exports from the same organisation share the Whisper architecture and are expected to work, though they are not in the catalog.
+
+**There is no automatic download yet.** Fetch a model manually, for example:
+
+```bash
+python -c "from huggingface_hub import snapshot_download; \
+  snapshot_download('OpenVINO/whisper-base.en-fp16-ov', \
+  local_dir='$HOME/.local/share/voxtype/models/whisper-base.en-fp16-ov')"
+```
+
+**Example:**
+```toml
+[openvino]
+model = "whisper-base.en-fp16-ov"
+```
+
+### device
+
+**Type:** String
+**Default:** `"GPU"`
+**Required:** No
+
+Which Intel device runs inference. The string is passed to OpenVINO unchanged, so any device specifier it accepts works here.
+
+| Value | Runs on |
+|-------|---------|
+| `GPU` | Integrated (or discrete Intel) GPU — the default, and the fastest option measured |
+| `NPU` | Neural Processing Unit, on Core Ultra and newer |
+| `CPU` | CPU only |
+| `AUTO` | OpenVINO picks |
+| `HETERO:NPU,GPU` | Splits the graph: NPU first, iGPU for what it cannot take |
+
+**Measured on a Core Ultra 5 225H (Arrow Lake-H), Whisper base.en FP16, 4.75 s of audio:**
+
+| Path | Inference |
+|------|-----------|
+| `whisper` engine, Vulkan iGPU | 535 ms |
+| `openvino` engine, `device = "GPU"` | 250 ms |
+| `openvino` engine, `device = "NPU"` | 305 ms |
+| `openvino` engine, `device = "CPU"` | 706 ms |
+
+With `large-v3-turbo` the iGPU gap widens to roughly 4x. On 21 minutes of real speech the iGPU stayed ahead of Vulkan by about 1.4x, with word error rate unchanged (13.69% vs 13.61%).
+
+The NPU works but is not recommended: it is slower than the iGPU on every model tested, its first compile of a large model took 107 seconds, and its energy per transcription measured no better than the iGPU's.
+
+**Using the NPU** additionally requires membership of the `render` group, or the device is silently absent:
+
+```bash
+sudo usermod -aG render $USER   # then log out and back in
+```
+
+**Example:**
+```toml
+[openvino]
+model = "whisper-base.en-fp16-ov"
+device = "NPU"
+```
+
+### library
+
+**Type:** String (path)
+**Default:** unset
+**Required:** No
+
+Full path to `libopenvino_genai_c.so`, for when it is not somewhere the dynamic linker already searches. Leave unset if the library is installed system-wide or reachable via `LD_LIBRARY_PATH`.
+
+**Example:**
+```toml
+[openvino]
+library = "/usr/lib/voxtype/openvino/libopenvino_genai_c.so"
+```
+
+### cache_dir
+
+**Type:** String (path)
+**Default:** `$XDG_CACHE_HOME/voxtype/openvino` (falling back to `~/.cache/voxtype/openvino`)
+**Required:** No
+
+Where OpenVINO stores the model compiled for your specific device.
+
+This matters more than it looks. Without a warm cache every daemon start recompiles the model: about 1 second on the iGPU for `base.en`, and 107 seconds on the NPU for `large-v3-turbo`. The cache lands in the same order of magnitude as the model itself — 495 MB for a 148 MB model, 2.5 GB for a 1.6 GB one.
+
+The directory is created if missing.
+
+**Example:**
+```toml
+[openvino]
+cache_dir = "/var/tmp/voxtype-openvino-cache"
+```
+
+### on_demand_loading
+
+**Type:** Boolean
+**Default:** `false`
+**Required:** No
+
+Build the pipeline when recording starts rather than keeping it ready. Leaving this `false` keeps the model resident, which is usually what you want given the compile cost above.
+
+### Runtime libraries
+
+The engine needs three shared libraries that no distribution currently packages. Installing OpenVINO itself is not enough: `WhisperPipeline` lives in `openvino.genai`, a separate project.
+
+| Library | Role |
+|---------|------|
+| `libopenvino_genai_c.so` | C API that voxtype opens at run time |
+| `libopenvino_genai.so` | the C++ core it wraps |
+| `libopenvino_tokenizers.so` | tokenizer plugin `WhisperPipeline` loads |
+
+All three must sit in the same directory. Omitting the third one makes pipeline construction fail with an opaque `UnknownException` and no other clue.
+
+Release binaries built from `Dockerfile.openvino` ship them under `/usr/lib/voxtype/openvino/`. Building from source means building them yourself:
+
+```bash
+git clone --depth 1 --branch 2026.3.0.0 --recurse-submodules \
+    https://github.com/openvinotoolkit/openvino.genai.git
+cd openvino.genai
+# Upstream assigns a u8"..." literal to std::string, which C++20 rejects.
+sed -i 's|const std::string replacement_char = u8"|const std::string replacement_char = "|' \
+    src/cpp/src/whisper/word_level_timestamps.cpp
+cmake -B build -S . -DCMAKE_BUILD_TYPE=Release \
+    -DENABLE_PYTHON=OFF -DENABLE_JS=OFF -DENABLE_SAMPLES=OFF \
+    -DENABLE_TESTS=OFF -DENABLE_TOOLS=OFF
+cmake --build build --target openvino_genai_c --parallel
+```
+
+The tag must match the OpenVINO runtime installed on the host.
+
+### Building
+
+```bash
+cargo build --release --features openvino
+```
+
+The engine adds no compiled C++ of its own — the libraries above are opened at run time — so a binary built with this feature still starts on machines without them, and reports a clear error when the engine is selected.
+
+---
+
 ## [soniox]
 
 Configuration for the Soniox cloud streaming WebSocket STT engine. This section is only used when `engine = "soniox"`.
