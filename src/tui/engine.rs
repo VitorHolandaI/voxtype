@@ -1307,6 +1307,12 @@ fn engine_guidance(state: &EngineState) -> Vec<Line<'static>> {
             "Cohere Transcribe (Cohere Labs). #1 on the Open ASR Leaderboard \
              for English (5.42 WER). 14 languages. ~3 GB on disk.",
         ),
+        (
+            "openvino",
+            "Whisper in OpenVINO IR, on Intel CPU / iGPU / NPU. Same models \
+             as whisper, different runtime. Set [openvino] device to GPU, \
+             NPU, CPU or AUTO.",
+        ),
     ] {
         lines.push(Line::from(Span::styled(
             format!("{}: ", name),

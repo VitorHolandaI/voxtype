@@ -88,6 +88,10 @@ parakeet-rs = { version = "0.3.5", optional = true }
 # ONNX-based ASR engines (Moonshine, SenseVoice, Paraformer, Dolphin, Omnilingual)
 ort = { version = "2.0.0-rc.12", optional = true, default-features = false, features = ["std", "ndarray", "api-24", "half"] }
 ndarray = { version = "0.16", optional = true }
+# OpenVINO GenAI. `runtime-linking` dlopens the libraries instead of linking
+# at build time, so a binary built with this feature still runs where they
+# are absent — it reports a clear error instead of failing to load.
+openvino-genai = { version = "0.11", optional = true, features = ["runtime-linking"] }
 half = { version = "2", optional = true }
 tokenizers = { version = "0.20", optional = true, default-features = false, features = ["onig"] }
 rustfft = { version = "6", optional = true }
@@ -257,6 +261,12 @@ cohere-tensorrt = ["cohere", "onnx-tensorrt-enabled"]
 # Dynamic loading for system ONNX Runtime. Used by Nix builds and the
 # AMD/MIGraphX binary, which pairs with the system `onnxruntime-rocm`
 # package (no upstream pyke prebuilt ships the MIGraphX provider .so).
+# OpenVINO GenAI backend (Whisper IR on Intel CPU/iGPU/NPU).
+# Pure subprocess bridge to contrib/openvino_worker.py, so no new Rust
+# dependencies: the openvino-genai crate needs libopenvino_genai_c.so,
+# which no distribution ships yet.
+openvino = ["dep:openvino-genai"]
+
 onnx-load-dynamic = ["ort/load-dynamic"]
 
 [build-dependencies]

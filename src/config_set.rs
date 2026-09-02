@@ -100,6 +100,7 @@ pub const ENGINE_NAMES: &[&str] = &[
     "dolphin",
     "omnilingual",
     "cohere",
+    "openvino",
 ];
 
 /// Is the engine name one we recognize at all?
@@ -141,6 +142,7 @@ pub fn engine_feature_compiled(name: &str) -> bool {
         TranscriptionEngine::Dolphin => cfg!(feature = "dolphin"),
         TranscriptionEngine::Omnilingual => cfg!(feature = "omnilingual"),
         TranscriptionEngine::Cohere => cfg!(feature = "cohere"),
+        TranscriptionEngine::OpenVino => cfg!(feature = "openvino"),
     }
 }
 
@@ -263,6 +265,7 @@ mod tests {
             .iter()
             .filter(|n| !ENGINE_NAMES.contains(n))
             .collect();
+        // soniox is cloud-only: no local model to name.
         assert_eq!(
             excluded,
             [&"soniox"],

@@ -838,6 +838,9 @@ pub fn compiled_features() -> Vec<&'static str> {
     if cfg!(feature = "cohere") {
         f.push("cohere");
     }
+    if cfg!(feature = "openvino") {
+        f.push("openvino");
+    }
     // Meeting-mode capability: ML-based speaker diarization (ECAPA-TDNN).
     // When absent, meeting mode falls back to source-based attribution.
     if cfg!(feature = "ml-diarization") {
@@ -1178,6 +1181,7 @@ mod tests {
         require_feature_listed!("dolphin");
         require_feature_listed!("omnilingual");
         require_feature_listed!("cohere");
+        require_feature_listed!("openvino");
         require_feature_listed!("ml-diarization");
         require_feature_listed!("gpu-vulkan");
         require_feature_listed!("gpu-cuda");

@@ -23,6 +23,7 @@ pub const CATALOG_ENGINES: &[&str] = &[
     "dolphin",
     "omnilingual",
     "cohere",
+    "openvino",
 ];
 
 /// Models voxtype knows how to download for `engine`.
@@ -35,6 +36,14 @@ pub fn model_catalog(engine: &str) -> Vec<&'static str> {
         "paraformer" => vec!["paraformer-zh", "paraformer-en"],
         "dolphin" => vec!["dolphin-base"],
         "omnilingual" => vec!["omnilingual-300m"],
+        "openvino" => vec![
+            "whisper-base.en-fp16-ov",
+            "whisper-base.en-int8-ov",
+            "whisper-base-fp16-ov",
+            "whisper-base-int8-ov",
+            "whisper-large-v3-turbo-fp16-ov",
+            "whisper-large-v3-turbo-int8-ov",
+        ],
         "cohere" => vec![
             "cohere-transcribe-q4f16",
             "cohere-transcribe-q4",
@@ -58,6 +67,7 @@ pub const fn default_model(engine: &str) -> &'static str {
         b"dolphin" => "dolphin-base",
         b"omnilingual" => "omnilingual-300m",
         b"cohere" => "cohere-transcribe-q4f16",
+        b"openvino" => "whisper-base.en-fp16-ov",
         _ => "",
     }
 }

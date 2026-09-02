@@ -6,6 +6,7 @@ mod cohere;
 mod dolphin;
 mod moonshine;
 mod omnilingual;
+mod openvino;
 mod paraformer;
 mod parakeet;
 mod sensevoice;
@@ -15,6 +16,7 @@ pub use cohere::CohereConfig;
 pub use dolphin::DolphinConfig;
 pub use moonshine::MoonshineConfig;
 pub use omnilingual::OmnilingualConfig;
+pub use openvino::OpenVinoConfig;
 pub use paraformer::ParaformerConfig;
 pub use parakeet::{ParakeetConfig, ParakeetModelType};
 pub use sensevoice::SenseVoiceConfig;
@@ -65,6 +67,9 @@ pub enum TranscriptionEngine {
     Cohere,
     /// Use Soniox (cloud streaming WebSocket STT).
     Soniox,
+    /// Use OpenVINO GenAI (Whisper in OpenVINO IR, on Intel CPU/iGPU/NPU).
+    /// Requires: cargo build --features openvino
+    OpenVino,
 }
 
 impl TranscriptionEngine {

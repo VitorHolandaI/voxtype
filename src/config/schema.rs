@@ -186,6 +186,7 @@ pub fn feature_compiled(feature: &str) -> bool {
         "dolphin" => cfg!(feature = "dolphin"),
         "omnilingual" => cfg!(feature = "omnilingual"),
         "cohere" => cfg!(feature = "cohere"),
+        "openvino" => cfg!(feature = "openvino"),
         _ => false,
     }
 }

@@ -535,6 +535,9 @@ fn detect_missing_model() -> Option<MissingModel> {
         config::TranscriptionEngine::Cohere => return None,
         // Soniox is cloud-only, no local model to probe.
         config::TranscriptionEngine::Soniox => return None,
+        // OpenVINO models are IR directories at a user-chosen path, not
+        // entries in the model catalog; the disk probe has nothing to match.
+        config::TranscriptionEngine::OpenVino => return None,
     };
 
     if model.is_empty() {

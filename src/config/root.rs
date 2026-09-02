@@ -1,7 +1,8 @@
 use super::{
     AudioConfig, CohereConfig, DolphinConfig, HotkeyConfig, MeetingConfig, MoonshineConfig,
-    OmnilingualConfig, OutputConfig, ParaformerConfig, ParakeetConfig, Profile, SenseVoiceConfig,
-    SonioxConfig, StatusConfig, TextConfig, TranscriptionEngine, VadConfig, WhisperConfig,
+    OmnilingualConfig, OpenVinoConfig, OutputConfig, ParaformerConfig, ParakeetConfig, Profile,
+    SenseVoiceConfig, SonioxConfig, StatusConfig, TextConfig, TranscriptionEngine, VadConfig,
+    WhisperConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -61,6 +62,10 @@ pub struct Config {
     #[serde(default)]
     pub soniox: Option<SonioxConfig>,
 
+    /// OpenVINO configuration (optional, only used when engine = "openvino")
+    #[serde(default)]
+    pub openvino: Option<OpenVinoConfig>,
+
     /// Text processing configuration (replacements, spoken punctuation)
     #[serde(default)]
     pub text: TextConfig,
@@ -113,6 +118,7 @@ impl Default for Config {
             omnilingual: None,
             cohere: None,
             soniox: None,
+            openvino: None,
             text: TextConfig::default(),
             vad: VadConfig::default(),
             status: StatusConfig::default(),
@@ -340,6 +346,11 @@ impl Config {
                 .unwrap_or(false),
             // Soniox is a cloud backend; nothing to load on demand.
             TranscriptionEngine::Soniox => false,
+            TranscriptionEngine::OpenVino => self
+                .openvino
+                .as_ref()
+                .map(|o| o.on_demand_loading)
+                .unwrap_or(false),
         }
     }
 
@@ -419,6 +430,11 @@ impl Config {
                 .as_ref()
                 .map(|s| s.model.as_str())
                 .unwrap_or("soniox (not configured)"),
+            TranscriptionEngine::OpenVino => self
+                .openvino
+                .as_ref()
+                .map(|o| o.model.as_str())
+                .unwrap_or("openvino (not configured)"),
         }
     }
 

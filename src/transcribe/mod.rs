@@ -65,6 +65,8 @@ pub mod dolphin;
 
 #[cfg(feature = "omnilingual")]
 pub mod omnilingual;
+#[cfg(feature = "openvino")]
+pub mod openvino;
 
 /// Cohere Transcribe backend (proof-of-concept, not wired into factory/CLI/config).
 /// See `src/transcribe/cohere.rs` for usage.
@@ -276,6 +278,20 @@ pub fn create_transcriber(config: &Config) -> Result<Box<dyn Transcriber>, Trans
             })?;
             Ok(Box::new(soniox::SonioxTranscriber::new(cfg.clone())?))
         }
+        #[cfg(feature = "openvino")]
+        TranscriptionEngine::OpenVino => {
+            let cfg = config.openvino.as_ref().ok_or_else(|| {
+                TranscribeError::InitFailed(
+                    "OpenVINO engine selected but [openvino] config section is missing".to_string(),
+                )
+            })?;
+            Ok(Box::new(openvino::OpenVinoTranscriber::new(cfg)?))
+        }
+        #[cfg(not(feature = "openvino"))]
+        TranscriptionEngine::OpenVino => Err(TranscribeError::InitFailed(
+            "OpenVINO engine requested but voxtype was not compiled with --features openvino"
+                .to_string(),
+        )),
     }
 }
 
