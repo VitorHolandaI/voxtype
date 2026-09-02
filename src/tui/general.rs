@@ -116,10 +116,23 @@ fn render_info(f: &mut Frame, area: Rect, app: &App) {
         "stopped"
     };
 
-    let active = inv
-        .active_variant
-        .map(|v| format!("{} ({})", v.display(), v.binary_name()))
-        .unwrap_or_else(|| "unknown (symlink missing or unrecognized)".to_string());
+    // `active_variant` reads the packaged symlinks under /usr/lib/voxtype.
+    // A source build is not one of those, so reporting the package's variant
+    // there is actively misleading — say what this binary is instead.
+    let active = match inv.install_kind {
+        InstallKind::Source => {
+            let features = crate::setup::binary::compiled_features();
+            if features.is_empty() {
+                "this source build (no optional features)".to_string()
+            } else {
+                format!("this source build ({})", features.join(", "))
+            }
+        }
+        InstallKind::Package => inv
+            .active_variant
+            .map(|v| format!("{} ({})", v.display(), v.binary_name()))
+            .unwrap_or_else(|| "unknown (symlink missing or unrecognized)".to_string()),
+    };
 
     let rec = &inv.recommendation;
     let recommended = format!("{}  /  {}", rec.whisper.display(), rec.onnx.display());
