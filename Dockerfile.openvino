@@ -42,6 +42,9 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     gnupg \
     build-essential \
+    # whisper-rs-sys runs bindgen, which needs libclang at build time.
+    clang \
+    libclang-dev \
     cmake \
     ninja-build \
     pkg-config \
@@ -53,6 +56,10 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-dev \
     libappindicator3-dev \
     libssl-dev \
+    # OpenVINOConfig.cmake does find_package(TBB 2021.11.0). The runtime
+    # packages pull libtbb12, but the CMake config that find_package needs
+    # only ships in the -dev package.
+    libtbb-dev \
     git \
     binutils \
     python3 \
@@ -102,12 +109,34 @@ RUN git clone --depth 1 --branch ${GENAI_TAG} --recurse-submodules --shallow-sub
         -DENABLE_TOOLS=OFF \
     && cmake --build build --target openvino_genai_c --parallel
 
-# Collect the three libraries. `cp -L` because the build tree uses SONAME
-# symlinks and package.sh wants real files.
-RUN mkdir -p /tmp/openvino-libs \
-    && cp -L /build/openvino.genai/build/src/c/libopenvino_genai_c.so /tmp/openvino-libs/ \
-    && cp -L /build/openvino.genai/build/openvino_genai/libopenvino_genai.so /tmp/openvino-libs/ \
-    && cp -L /build/openvino.genai/build/openvino_genai/libopenvino_tokenizers.so /tmp/openvino-libs/
+# Collect the three libraries.
+#
+# Two things have to be right or the binary fails on the user's machine:
+#
+# 1. Names must match the SONAMEs. libopenvino_genai_c.so records a
+#    DT_NEEDED on `libopenvino_genai.so.2630`, so shipping the core under
+#    its short name leaves the loader looking for a file that isn't there.
+#
+# 2. The RPATH cmake bakes in points at this image's build tree
+#    (/build/openvino.genai/...), which does not exist where the package
+#    is installed. Rewriting it to $ORIGIN makes each library find its
+#    siblings in whatever directory they end up in — /usr/lib/voxtype/openvino
+#    for a package install, anywhere for a manual one.
+RUN apt-get update && apt-get install -y patchelf && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /tmp/openvino-libs \
+    && cp -L /build/openvino.genai/build/src/c/libopenvino_genai_c.so \
+        /tmp/openvino-libs/libopenvino_genai_c.so \
+    && cp -L /build/openvino.genai/build/openvino_genai/libopenvino_genai.so \
+        /tmp/openvino-libs/libopenvino_genai.so.2630 \
+    && cp -L /build/openvino.genai/build/openvino_genai/libopenvino_tokenizers.so \
+        /tmp/openvino-libs/libopenvino_tokenizers.so \
+    && patchelf --set-rpath '$ORIGIN' /tmp/openvino-libs/libopenvino_genai_c.so \
+    && patchelf --set-rpath '$ORIGIN' /tmp/openvino-libs/libopenvino_genai.so.2630 \
+    && patchelf --set-rpath '$ORIGIN' /tmp/openvino-libs/libopenvino_tokenizers.so \
+    && echo "--- RPATH after patch ---" \
+    && for f in /tmp/openvino-libs/*; do \
+           echo "$f: $(objdump -p "$f" | awk '/RPATH|RUNPATH/{print $2}')"; \
+       done
 
 # Copy voxtype source and build
 COPY . /build/voxtype
@@ -130,7 +159,7 @@ RUN echo "=== Verifying OpenVINO binary ===" \
     && echo "=== Companion .so files (all three required) ===" \
     && ls -lh /tmp/openvino-libs/ \
     && test -f /tmp/openvino-libs/libopenvino_genai_c.so \
-    && test -f /tmp/openvino-libs/libopenvino_genai.so \
+    && test -f /tmp/openvino-libs/libopenvino_genai.so.2630 \
     && test -f /tmp/openvino-libs/libopenvino_tokenizers.so \
     && echo "=== Max glibc (must be <= 2.39 for Ubuntu 24.04) ===" \
     && objdump -T /tmp/voxtype-openvino | grep -oP 'GLIBC_\d+\.\d+' | sort -t. -k2 -n -u | tail -1
@@ -138,7 +167,7 @@ RUN echo "=== Verifying OpenVINO binary ===" \
 CMD mkdir -p /output \
     && cp /tmp/voxtype-openvino /output/voxtype-${VERSION}-linux-x86_64-openvino \
     && cp /tmp/openvino-libs/libopenvino_genai_c.so /output/voxtype-${VERSION}-linux-x86_64-openvino.libopenvino_genai_c.so \
-    && cp /tmp/openvino-libs/libopenvino_genai.so /output/voxtype-${VERSION}-linux-x86_64-openvino.libopenvino_genai.so \
+    && cp /tmp/openvino-libs/libopenvino_genai.so.2630 /output/voxtype-${VERSION}-linux-x86_64-openvino.libopenvino_genai.so.2630 \
     && cp /tmp/openvino-libs/libopenvino_tokenizers.so /output/voxtype-${VERSION}-linux-x86_64-openvino.libopenvino_tokenizers.so \
     && echo "Output:" \
     && ls -la /output/voxtype-${VERSION}-linux-x86_64-openvino*
