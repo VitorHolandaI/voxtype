@@ -1619,6 +1619,35 @@ cache_dir = "/var/tmp/voxtype-openvino-cache"
 
 Build the pipeline when recording starts rather than keeping it ready. Leaving this `false` keeps the model resident, which is usually what you want given the compile cost above.
 
+### Host dependencies
+
+The OpenVINO runtime is not bundled; it comes from the distribution, the same
+way the Vulkan binary expects `libvulkan.so.1`.
+
+On Arch a single package covers everything:
+
+```bash
+sudo pacman -S openvino openvino-intel-gpu-plugin
+sudo pacman -S openvino-intel-npu-plugin intel-npu-driver intel-npu-compiler  # NPU only
+```
+
+Debian and Ubuntu split it up, and **`libopenvino-ir-frontend` is easy to
+miss**: without it OpenVINO cannot read `.xml` IR models at all, and pipeline
+construction fails with a bare `UnknownException` that says nothing about the
+cause.
+
+```bash
+# Intel's repository, see https://apt.repos.intel.com/openvino
+sudo apt-get install \
+    libopenvino-2026.3.0 \
+    libopenvino-ir-frontend-2026.3.0 \
+    libopenvino-intel-cpu-plugin-2026.3.0 \
+    libopenvino-intel-gpu-plugin-2026.3.0   # for device = "GPU"
+```
+
+Match the version to the one the libraries were built against; mixing majors
+does not work.
+
 ### Runtime libraries
 
 The engine needs three shared libraries that no distribution currently packages. Installing OpenVINO itself is not enough: `WhisperPipeline` lives in `openvino.genai`, a separate project.
