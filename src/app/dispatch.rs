@@ -15,7 +15,7 @@ use super::info::run_info_command;
 use super::meeting::run_meeting_command;
 use super::record::send_record_command;
 use super::status::run_status;
-use super::transcribe_file::transcribe_file;
+use super::transcribe_file::transcribe_files;
 use super::updates::check_for_updates;
 
 /// Check if running as root and warn for commands that don't need elevated privileges.
@@ -119,7 +119,7 @@ pub(crate) async fn dispatch(
             menubar::run(state_file);
         }
 
-        Commands::Transcribe { file, engine } => {
+        Commands::Transcribe { files, engine } => {
             if let Some(engine_name) = engine {
                 match engine_name.parse::<config::TranscriptionEngine>() {
                     Ok(e) => config.engine = e,
@@ -133,7 +133,7 @@ pub(crate) async fn dispatch(
                     }
                 }
             }
-            transcribe_file(&config, &file)?;
+            transcribe_files(&config, &files)?;
         }
 
         Commands::TranscribeWorker {

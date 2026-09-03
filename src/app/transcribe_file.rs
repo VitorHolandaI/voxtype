@@ -1,14 +1,62 @@
-//! `voxtype transcribe <file>` — one-shot transcription of an audio file.
+//! `voxtype transcribe <file>...` — one-shot transcription of audio files.
 //!
 //! `resample` lives here rather than in `src/audio/` because it has exactly
 //! one call site (this command). Per the refactoring policy: don't extract
 //! an abstraction from a single use site.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use voxtype::{config, transcribe, vad};
 
-/// Transcribe an audio file
-pub(crate) fn transcribe_file(config: &config::Config, path: &PathBuf) -> anyhow::Result<()> {
+/// Transcribe one or more audio files, reusing a single loaded model.
+///
+/// The transcriber is built once and shared across every file. The first
+/// file therefore pays model load, and the rest run against a warm model,
+/// which is the state a running daemon is in.
+pub(crate) fn transcribe_files(config: &config::Config, paths: &[PathBuf]) -> anyhow::Result<()> {
+    let transcriber = transcribe::create_transcriber(config)?;
+    let vad = vad::create_vad(config).ok().flatten();
+    let multiple = paths.len() > 1;
+
+    for path in paths {
+        if multiple {
+            println!("=== {} ===", path.display());
+        }
+
+        let samples = load_samples(path)?;
+
+        if let Some(vad) = &vad {
+            match vad.detect(&samples) {
+                Ok(result) => {
+                    println!(
+                        "VAD: {:.2}s speech ({:.1}% of audio)",
+                        result.speech_duration_secs,
+                        result.speech_ratio * 100.0
+                    );
+                    if !result.has_speech {
+                        println!("No speech detected, skipping transcription.");
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("VAD warning: {}", e);
+                    // Continue with transcription if VAD fails
+                }
+            }
+        }
+
+        let start = std::time::Instant::now();
+        let text = transcriber.transcribe(&samples)?;
+        let elapsed = start.elapsed().as_secs_f64();
+
+        println!("Transcribed in {:.4}s", elapsed);
+        println!("\n{}", text);
+    }
+
+    Ok(())
+}
+
+/// Decode a WAV file to f32 mono at 16kHz.
+fn load_samples(path: &Path) -> anyhow::Result<Vec<f32>> {
     use hound::WavReader;
 
     println!("Loading audio file: {:?}", path);
@@ -61,31 +109,5 @@ pub(crate) fn transcribe_file(config: &config::Config, path: &PathBuf) -> anyhow
         final_samples.len() as f32 / 16000.0
     );
 
-    // Run VAD if enabled
-    if let Ok(Some(vad)) = vad::create_vad(config) {
-        match vad.detect(&final_samples) {
-            Ok(result) => {
-                println!(
-                    "VAD: {:.2}s speech ({:.1}% of audio)",
-                    result.speech_duration_secs,
-                    result.speech_ratio * 100.0
-                );
-                if !result.has_speech {
-                    println!("No speech detected, skipping transcription.");
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                eprintln!("VAD warning: {}", e);
-                // Continue with transcription if VAD fails
-            }
-        }
-    }
-
-    // Create transcriber and transcribe
-    let transcriber = transcribe::create_transcriber(config)?;
-    let text = transcriber.transcribe(&final_samples)?;
-
-    println!("\n{}", text);
-    Ok(())
+    Ok(final_samples)
 }

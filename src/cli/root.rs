@@ -640,8 +640,8 @@ mod tests {
     fn test_transcribe_engine_flag() {
         let cli = Cli::parse_from(["voxtype", "transcribe", "test.wav", "--engine", "moonshine"]);
         match cli.command {
-            Some(Commands::Transcribe { file, engine }) => {
-                assert_eq!(file, std::path::PathBuf::from("test.wav"));
+            Some(Commands::Transcribe { files, engine }) => {
+                assert_eq!(files, vec![std::path::PathBuf::from("test.wav")]);
                 assert_eq!(engine, Some("moonshine".to_string()));
             }
             _ => panic!("Expected Transcribe command"),
@@ -654,6 +654,18 @@ mod tests {
         match cli.command {
             Some(Commands::Transcribe { engine, .. }) => {
                 assert!(engine.is_none());
+            }
+            _ => panic!("Expected Transcribe command"),
+        }
+    }
+
+    #[test]
+    fn test_transcribe_multiple_files() {
+        let cli = Cli::parse_from(["voxtype", "transcribe", "a.wav", "b.wav", "c.wav"]);
+        match cli.command {
+            Some(Commands::Transcribe { files, .. }) => {
+                assert_eq!(files.len(), 3);
+                assert_eq!(files[2], std::path::PathBuf::from("c.wav"));
             }
             _ => panic!("Expected Transcribe command"),
         }

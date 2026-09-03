@@ -19,10 +19,12 @@ pub enum Commands {
     #[command(hide = true)]
     AppLaunch,
 
-    /// Transcribe an audio file (WAV, 16kHz, mono)
+    /// Transcribe audio files (WAV, 16kHz, mono)
     Transcribe {
-        /// Path to audio file
-        file: std::path::PathBuf,
+        /// Paths to audio files. Several files share one loaded model, so
+        /// each after the first measures steady-state transcription speed.
+        #[arg(required = true, num_args = 1..)]
+        files: Vec<std::path::PathBuf>,
 
         /// Override transcription engine
         #[arg(
