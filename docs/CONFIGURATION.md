@@ -1552,28 +1552,36 @@ Which Intel device runs inference. The string is passed to OpenVINO unchanged, s
 ### Measured performance
 
 Core Ultra 5 225H (Arrow Lake-H), 60 clips from LibriSpeech test-clean
-(34 speakers, 367.8 s), on AC power. Every engine ran through the same
-harness, and every number below is steady state: the model is loaded
-once and the first transcription is discarded, because that is the state
-a running daemon is in. `model_manager` only evicts secondary models, so
+(34 speakers, 367.8 s), on AC power with the `performance` platform
+profile. Reproduce with `scripts/benchmark_openvino.py`, which waits for
+the CPU to go idle, cools down for a minute between engines, and runs
+every engine twice in opposite order so a thermal drift shows up as a
+spread instead of hiding in the result.
+
+Every number is steady state. Each process transcribes one warm-up clip
+that is thrown away and then the whole corpus, because that is the state
+a running daemon is in: `model_manager` only evicts secondary models, so
 the primary model stays resident for the life of the daemon.
 
 **Dictation, one clip at a time (average clip 6.1 s):**
 
-| Engine | Warm median | p90 | WER |
-|--------|-------------|-----|-----|
-| `openvino`, `device = "GPU"`, base.en | 213 ms | 275 ms | 5.22% |
-| `openvino`, `device = "NPU"`, base.en | 244 ms | 299 ms | 5.12% |
-| `whisper` Vulkan, base.en | 590 ms | 682 ms | 4.72% |
-| `whisper` CPU AVX2, base.en | 959 ms | 1063 ms | 4.63% |
-| `openvino`, `device = "GPU"`, large-v3-turbo | 690 ms | 788 ms | 2.46% |
-| `whisper` Vulkan, large-v3-turbo | 5808 ms | 6594 ms | 2.56% |
+| Engine | Median | Spread over 2 rounds | p90 | RTF | WER |
+|--------|--------|----------------------|-----|-----|-----|
+| `openvino`, `device = "GPU"`, base.en | 180 ms | 176-183 ms | 233 ms | 0.028 | 5.47% |
+| `openvino`, `device = "NPU"`, base.en | 205 ms | 204-207 ms | 255 ms | 0.033 | 5.37% |
+| `whisper` Vulkan, base.en | 447 ms | 443-452 ms | 511 ms | 0.073 | 4.79% |
+| `openvino`, `device = "GPU"`, large-v3-turbo | 615 ms | 614-617 ms | 690 ms | 0.098 | 2.44% |
+| `whisper` CPU AVX2, base.en | 881 ms | 879-883 ms | 938 ms | 0.144 | 4.69% |
+| `whisper` Vulkan, large-v3-turbo | 4045 ms | 4022-4068 ms | 4155 ms | 0.659 | 2.54% |
 
-The comparison that matters for a dictation daemon is the last two rows
-against the third. OpenVINO running `large-v3-turbo` costs about the
-same wall time as Vulkan running `base.en` and roughly halves the word
-error rate. Through Vulkan, `large-v3-turbo` takes almost six seconds
-per clip, which is too slow to dictate against.
+On the same iGPU, OpenVINO is 2.5x faster than the Vulkan backend on
+`base.en` and 6.6x faster on `large-v3-turbo`.
+
+The comparison that matters for a dictation daemon is the fourth row
+against the third. OpenVINO running `large-v3-turbo` costs about 170 ms
+more than Vulkan running `base.en` and roughly halves the word error
+rate. Through Vulkan, `large-v3-turbo` takes four seconds per clip,
+which is too slow to dictate against.
 
 **The same 367.8 s as one continuous file:**
 
@@ -1601,9 +1609,14 @@ On `base.en` the per-second rates are within 20% of each other and the
 whole advantage is the 13x lower fixed cost. On `large-v3-turbo` the
 rate itself is 4.5x better, so the gap survives on long audio too.
 
-The NPU is close to the iGPU in speed (244 ms against 213 ms) and its
-first compile of a large model took 107 seconds. It needs membership of
-the `render` group.
+Battery energy per transcription has not been measured to a standard
+worth publishing. `scripts/benchmark_openvino_energy.py` does the
+measurement and refuses to report a winner unless idle power is low and
+stable and the two battery meters agree; every attempt so far has been
+rejected by those checks.
+
+The NPU is close to the iGPU in speed (205 ms against 180 ms) and its
+first compile of a large model took 107 seconds.
 
 **Using the NPU** additionally requires membership of the `render` group, or the device is silently absent:
 
