@@ -174,14 +174,20 @@ impl OpenVinoTranscriber {
         load_library(self.config.library.as_deref())?;
 
         let model = self.model_dir.to_string_lossy();
-        tracing::info!(
-            device = %self.config.device,
-            model = %model,
-            "building OpenVINO pipeline"
-        );
-
-        let _quiet = StdoutToStderr::new();
-        WhisperPipeline::new(&model, &self.config.device).map_err(|e| {
+        let start = std::time::Instant::now();
+        let built = {
+            let _quiet = StdoutToStderr::new();
+            WhisperPipeline::new(&model, &self.config.device)
+        };
+        if built.is_ok() {
+            tracing::info!(
+                "OpenVINO model loaded in {:.2}s (device={}, model={})",
+                start.elapsed().as_secs_f32(),
+                self.config.device,
+                model
+            );
+        }
+        built.map_err(|e| {
             TranscribeError::InitFailed(format!(
                 "OpenVINO pipeline failed for device '{}': {e:?}. \
                  Check that the device exists (NPU needs the 'render' group) \
@@ -208,15 +214,29 @@ impl Transcriber for OpenVinoTranscriber {
         }
 
         let pipeline = guard.as_mut().expect("pipeline present");
-        let _quiet = StdoutToStderr::new();
-        let results = pipeline
-            .generate(samples, None)
-            .map_err(|e| TranscribeError::InferenceFailed(format!("{e:?}")))?;
+        let start = std::time::Instant::now();
+        let results = {
+            let _quiet = StdoutToStderr::new();
+            pipeline.generate(samples, None)
+        }
+        .map_err(|e| TranscribeError::InferenceFailed(format!("{e:?}")))?;
         let text = results
             .get_string()
-            .map_err(|e| TranscribeError::InferenceFailed(format!("{e:?}")))?;
+            .map_err(|e| TranscribeError::InferenceFailed(format!("{e:?}")))?
+            .trim()
+            .to_string();
 
-        Ok(text.trim().to_string())
+        tracing::info!(
+            "OpenVINO transcription completed in {:.2}s: {:?}",
+            start.elapsed().as_secs_f32(),
+            if text.chars().count() > 50 {
+                format!("{}...", text.chars().take(50).collect::<String>())
+            } else {
+                text.clone()
+            }
+        );
+
+        Ok(text)
     }
 
     fn prepare(&self) {
