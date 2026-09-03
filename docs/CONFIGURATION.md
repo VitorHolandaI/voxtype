@@ -1594,9 +1594,17 @@ which is too slow to dictate against.
 
 The ratios shrink on long audio because most of the gap on short clips
 is fixed cost per call, not throughput. Timing the same audio cut to
-lengths from 3 s to 60 s separates the two: neither engine pads to
-Whisper's 30 s window, both scale with duration, and both step at 30 s
-for the second window.
+lengths from 3 s to 60 s separates the two, and both engines show the
+same shape: cost rises with the length of the audio and steps again at
+30 s, where a second window begins.
+
+The rise is not the encoder. OpenVINO GenAI pads every input up to the
+full 30 s window before running the encoder, on the NPU pipeline and the
+default one alike (`extract()` in `whisper/feature_extractor.hpp`
+defaults `pad_to_max_duration` to true and neither call site overrides
+it), so encoder cost is fixed per window. What grows is decoding: three
+seconds of speech is a dozen tokens and sixty seconds is a couple of
+hundred, and the measured times track that.
 
 | | Fixed per call | Per second of audio |
 |---|---|---|
