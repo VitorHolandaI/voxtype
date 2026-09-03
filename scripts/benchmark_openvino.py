@@ -502,6 +502,7 @@ def print_winners(
     expected_cases: Sequence[Case],
     energy: bool = False,
     minimum_energy_margin: float = 0.0,
+    energy_key: str = "steady_energy_per_audio_s",
 ) -> None:
     models = sorted({case.model for case in expected_cases})
     print("\nWinners", flush=True)
@@ -519,7 +520,6 @@ def print_winners(
             )
             continue
         if energy:
-            energy_key = "steady_energy_per_audio_s"
             ordered_energy = sorted(
                 group,
                 key=lambda result: result.get(energy_key, result["joules_per_audio_s"]),
@@ -540,9 +540,10 @@ def print_winners(
             )
             fastest = min(group, key=lambda result: result["median_inference_s"])
             most_accurate = min(group, key=lambda result: result["wer_percent"])
+            basis = "battery" if energy_key.startswith("gross") else "steady"
             print(
                 f"  {model}: lowest-energy={energy_label} "
-                f"({winner_value:.4f} J/audio-s steady, margin={margin:.1%}), "
+                f"({winner_value:.4f} J/audio-s {basis}, margin={margin:.1%}), "
                 f"quality-adjusted={adjusted['label']}, "
                 f"fastest={fastest['label']}, lowest-WER={most_accurate['label']}",
                 flush=True,

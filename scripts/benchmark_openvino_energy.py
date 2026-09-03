@@ -54,6 +54,27 @@ def parse_energy_case(spec: str) -> benchmark.Case:
     return benchmark.parse_case(spec, with_repeats=True)
 
 
+# Fixed-work repeats. Every engine for a model transcribes the same audio, so
+# the comparison is "battery spent to finish this job" rather than "power drawn
+# while busy". A faster engine wins by being done sooner, which is the question
+# a laptop user is actually asking. Sized so the quickest engine still runs for
+# minutes and the slowest stays under half an hour.
+FIXED_WORK_REPEATS = {"base.en": 20, "large-v3-turbo": 3}
+
+
+def fixed_work_cases() -> list[benchmark.Case]:
+    return [
+        benchmark.Case(
+            case.label,
+            case.model,
+            case.binary,
+            case.config,
+            FIXED_WORK_REPEATS.get(case.model, 1),
+        )
+        for case in benchmark.default_cases()
+    ]
+
+
 def default_energy_cases() -> list[benchmark.Case]:
     repeats = {
         ("openvino-igpu", "base.en"): 13,
@@ -355,9 +376,16 @@ def evaluate_energy_case(
     process = active["process"]
     if process is None:
         raise benchmark.BenchmarkError("active phase did not run a process")
+    # Fixed-work mode reports the energy actually drawn from the battery to
+    # finish the job, idle included, so nothing is subtracted and the checks
+    # that guard the subtraction do not apply. The rest still do: a crashed
+    # transcriber, a truncated corpus, AC reappearing, a charge meter that
+    # never moved, and the two meters disagreeing all still invalidate a run.
+    fixed_work = getattr(args, "fixed_work", False)
     reasons: list[str] = []
-    validate_idle("idle_pre", pre_stats, args, reasons)
-    validate_idle("idle_post", post_stats, args, reasons)
+    if not fixed_work:
+        validate_idle("idle_pre", pre_stats, args, reasons)
+        validate_idle("idle_post", post_stats, args, reasons)
     if process.returncode != 0:
         reasons.append(f"transcriber exited with {process.returncode}: {process.stderr[-1000:]}")
     if active["elapsed_s"] < settle + args.min_active_evaluation_seconds:
@@ -365,16 +393,17 @@ def evaluate_energy_case(
             f"active phase {active['elapsed_s']:.1f}s is too short for "
             f"{settle:.1f}s sensor settling"
         )
-    if net_power_w <= 0:
-        reasons.append(f"net power is not positive ({net_power_w:.2f}W)")
-    if abs(drift_w) > args.max_idle_drift_w:
-        reasons.append(
-            f"idle drift {drift_w:+.2f}W exceeds {args.max_idle_drift_w:.2f}W"
-        )
-    if net_power_w > 0 and abs(drift_w) / net_power_w > args.max_drift_signal_fraction:
-        reasons.append(
-            f"idle drift is {abs(drift_w) / net_power_w:.0%} of the engine signal"
-        )
+    if not fixed_work:
+        if net_power_w <= 0:
+            reasons.append(f"net power is not positive ({net_power_w:.2f}W)")
+        if abs(drift_w) > args.max_idle_drift_w:
+            reasons.append(
+                f"idle drift {drift_w:+.2f}W exceeds {args.max_idle_drift_w:.2f}W"
+            )
+        if net_power_w > 0 and abs(drift_w) / net_power_w > args.max_drift_signal_fraction:
+            reasons.append(
+                f"idle drift is {abs(drift_w) / net_power_w:.0%} of the engine signal"
+            )
     if any(sample["mains_online"] for sample in active["samples"] + post["samples"]):
         reasons.append("AC power appeared during the measurement")
     if any(
@@ -417,16 +446,16 @@ def evaluate_energy_case(
     )
     if charge_delta_ah <= 0:
         reasons.append("charge_now did not decrease during the active phase")
-    if net_integral_j <= 0:
+    if not fixed_work and net_integral_j <= 0:
         reasons.append(f"baseline-adjusted current integral is {net_integral_j:.0f}J")
-    if net_charge_j <= 0:
+    if not fixed_work and net_charge_j <= 0:
         reasons.append(f"baseline-adjusted charge energy is {net_charge_j:.0f}J")
     if meter_divergence > args.max_meter_divergence:
         reasons.append(
             f"battery meters diverged by {meter_divergence:.0%}, above "
             f"{args.max_meter_divergence:.0%}"
         )
-    if net_meter_divergence > args.max_net_meter_divergence:
+    if not fixed_work and net_meter_divergence > args.max_net_meter_divergence:
         reasons.append(
             f"baseline-adjusted meters diverged by {net_meter_divergence:.0%}, above "
             f"{args.max_net_meter_divergence:.0%}"
@@ -447,6 +476,11 @@ def evaluate_energy_case(
     # Full-run energy from the charge meter, including load and warm-up. Kept
     # for reporting and cross-checking, not for the winner ranking.
     joules_per_audio_s = net_charge_j / audio_s if valid and audio_s > 0 else float("nan")
+    # What the battery actually lost to finish the job, idle included. This is
+    # the fixed-work number: no baseline removed, so no baseline error either.
+    gross_joules_per_audio_s = (
+        gross_charge_j / audio_s if valid and audio_s > 0 else float("nan")
+    )
     word_accuracy = max(0.0, 1.0 - wer_percent / 100.0) if valid else float("nan")
 
     def json_number(value: float) -> float | None:
@@ -481,9 +515,13 @@ def evaluate_energy_case(
         "meter_divergence_percent": meter_divergence * 100,
         "net_meter_divergence_percent": net_meter_divergence * 100,
         "joules_per_audio_s": json_number(joules_per_audio_s),
+        "gross_joules_per_audio_s": json_number(gross_joules_per_audio_s),
+        "fixed_work": fixed_work,
         "steady_energy_per_audio_s": json_number(steady_energy_per_audio_s),
         "quality_adjusted_energy_efficiency": (
-            word_accuracy * audio_s / net_charge_j if valid else None
+            word_accuracy * audio_s / (gross_charge_j if fixed_work else net_charge_j)
+            if valid
+            else None
         ),
         "capacity_start_percent": active["samples"][0]["capacity_percent"],
         "capacity_end_percent": active["samples"][-1]["capacity_percent"],
@@ -533,6 +571,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--library-dir",
         type=Path,
         default=Path("~/.local/lib/voxtype-openvino").expanduser(),
+    )
+    parser.add_argument(
+        "--fixed-work",
+        action="store_true",
+        help=(
+            "give every engine for a model the same audio to transcribe and "
+            "compare the battery charge each one spends finishing it, idle "
+            "included. Skips baseline subtraction and the idle checks that "
+            "guard it, so it still produces a result when idle power is high "
+            "or drifting."
+        ),
     )
     parser.add_argument("--continue-on-invalid", action="store_true")
     parser.add_argument(
@@ -588,7 +637,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.detach:
         return benchmark.detach("energy", args.log)
 
-    cases = args.case or default_energy_cases()
+    cases = args.case or (fixed_work_cases() if args.fixed_work else default_energy_cases())
     manifest = args.manifest.expanduser()
     clips = benchmark.load_manifest(manifest)
     benchmark.validate_cases(cases)
@@ -704,7 +753,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
             payload["results"].append(result)
             benchmark.atomic_write_json(result_path, payload)
-            if result["valid"]:
+            if result["valid"] and args.fixed_work:
+                print(
+                    f"  valid: median={result['median_inference_s'] * 1000:.0f}ms "
+                    f"WER={result['wer_percent']:.2f}% "
+                    f"job={result['active_wall_s']:.0f}s "
+                    f"battery={result['gross_charge_j']:.0f}J "
+                    f"({result['gross_joules_per_audio_s']:.3f} J/audio-s) "
+                    f"meters differ={result['meter_divergence_percent']:.0f}%",
+                    flush=True,
+                )
+            elif result["valid"]:
                 steady = result.get("steady_energy_per_audio_s")
                 full = result.get("joules_per_audio_s")
                 steady_text = f"{steady:.4f}" if steady is not None else "n/a"
@@ -730,6 +789,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         cases,
         energy=True,
         minimum_energy_margin=args.minimum_energy_margin,
+        energy_key=(
+            "gross_joules_per_audio_s" if args.fixed_work else "steady_energy_per_audio_s"
+        ),
     )
     print(f"Results: {result_path}", flush=True)
     print(f"Raw samples: {sample_path}", flush=True)
