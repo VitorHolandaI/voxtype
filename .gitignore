@@ -56,3 +56,7 @@ website/docs
 # Local agent worktrees and ephemeral plans
 .claude/worktrees/
 PLAN-*.md
+
+# Python bytecode from scripts/
+__pycache__/
+*.pyc
