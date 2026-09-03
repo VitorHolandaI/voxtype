@@ -61,11 +61,20 @@ fn load_library(explicit: Option<&str>) -> Result<(), TranscribeError> {
             }
         }
 
-        Err(format!(
-            "{}. Set [openvino] library to the full path of \
-             libopenvino_genai_c.so, or put its directory on LD_LIBRARY_PATH.",
-            tried.join("; ")
-        ))
+        // dlopen names the dependency it could not resolve, not the file it
+        // was handed. An error mentioning the OpenVINO core therefore means
+        // the GenAI libraries were found and the runtime under them was not,
+        // which `[openvino] library` cannot fix.
+        let tried = tried.join("; ");
+        let advice = if tried.contains("libopenvino.so") {
+            "The GenAI libraries were found but the OpenVINO runtime they \
+             need is not installed. See the [openvino] section of \
+             docs/CONFIGURATION.md for the packages your distribution needs."
+        } else {
+            "Set [openvino] library to the full path of \
+             libopenvino_genai_c.so, or put its directory on LD_LIBRARY_PATH."
+        };
+        Err(format!("{tried}. {advice}"))
     });
 
     outcome.clone().map_err(|e| {
