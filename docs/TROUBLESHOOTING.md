@@ -15,6 +15,7 @@ Solutions to common issues when using Voxtype.
   - [Text output not working on X11](#text-output-not-working-on-x11)
   - [Wrong characters on non-US keyboard layouts](#wrong-characters-on-non-us-keyboard-layouts-yz-swapped-qwertz-azerty)
 - [Performance Issues](#performance-issues)
+- [OpenVINO Engine Issues](#openvino-engine-issues)
 - [Soniox Backend Issues](#soniox-backend-issues)
 - [Media Does Not Pause While Recording (Omarchy Quattro)](#media-does-not-pause-while-recording-omarchy-quattro)
 - [Quickshell OSD Issues](#quickshell-osd-issues)
@@ -955,6 +956,43 @@ threads = 8  # Match your CPU cores
 3. **Use English-only model:**
 `.en` models are faster than multilingual models.
 
+### GPU hangs with flash_attention on an Intel iGPU
+
+**Symptom:** with `flash_attention = true` and the Vulkan binary on an
+Intel integrated GPU, transcription either takes several times longer
+than usual or the process dies with:
+
+```
+fatal runtime error: Rust cannot catch foreign exceptions, aborting
+```
+
+preceded by a long dump of driver buffer objects. `journalctl -k` shows
+the actual cause:
+
+```
+i915 0000:00:02.0: [drm] GPU HANG: ecode 12:1:85def5fb, in voxtype
+i915 0000:00:02.0: [drm] voxtype[...] context reset due to GPU hang
+```
+
+The GPU resets itself and the desktop survives, so the only visible
+symptom is voxtype dying or crawling.
+
+**Cause:** the flash attention kernels ggml selects for a device that
+advertises cooperative matrix support hang on this hardware. Measured on
+an Arrow Lake iGPU with Mesa: `base.en` hung and recovered but ran 2.7x
+slower (1615 ms against 590 ms), and `large-v3-turbo` hung hard enough to
+abort the process.
+
+**Solution:** leave `flash_attention` off, which is the default.
+
+```toml
+[whisper]
+flash_attention = false
+```
+
+There is nothing to gain by turning it on here: it was slower even in the
+run that completed.
+
 ### Slow transcription on multi-GPU systems (Vulkan)
 
 **Cause:** whisper.cpp 1.7+ enumerates integrated GPUs via Vulkan. On systems with both an integrated GPU (e.g., Intel UHD) and a discrete GPU (e.g., NVIDIA RTX), the integrated GPU gets index 0 and becomes the default. This can cause ~3x slower transcription.
@@ -1029,6 +1067,77 @@ model = "tiny.en"
 3. Try a different hotkey
 
 ---
+
+## OpenVINO Engine Issues
+
+### "OpenVINO GenAI library not loadable"
+
+The `openvino` engine opens its libraries at run time rather than linking
+them at build time, so a binary built with the feature still starts on a
+machine without OpenVINO and fails here instead.
+
+Read the rest of the message before acting on it. It names the library
+the loader could not resolve, and that says which of two different
+problems you have.
+
+**If it names `libopenvino_genai_c.so`:** the GenAI libraries are missing
+or somewhere the loader does not look. The deb and rpm install them to
+`/usr/lib/voxtype/openvino/`, which voxtype checks on its own. For a
+manual build, point at them:
+
+```toml
+[openvino]
+library = "/opt/openvino-genai/lib/libopenvino_genai_c.so"
+```
+
+**If it names `libopenvino.so`:** the GenAI libraries were found and the
+OpenVINO runtime underneath them is not installed. Setting
+`[openvino] library` will not help; install the runtime packages listed
+under *Runtime libraries* in [CONFIGURATION.md](CONFIGURATION.md).
+
+### Pipeline construction fails with `UnknownException`
+
+**Cause:** `libopenvino_tokenizers.so` is missing. All three libraries
+have to sit together: `libopenvino_genai_c.so`, `libopenvino_genai.so`
+and `libopenvino_tokenizers.so`.
+
+**Solution:** check that all three are in the same directory.
+
+```bash
+ls -l /usr/lib/voxtype/openvino/
+```
+
+### Model loads on Arch but not on Debian or Ubuntu
+
+**Cause:** `libopenvino-ir-frontend` is a separate package on Debian and
+Ubuntu. Without it OpenVINO cannot read `.xml` IR files at all. Arch
+bundles every frontend in its `openvino` package, so the same model works
+there and fails after a clean install elsewhere.
+
+**Solution:** install the frontend package alongside the runtime. See
+*Runtime libraries* in [CONFIGURATION.md](CONFIGURATION.md).
+
+### NPU device not found
+
+**Cause:** the NPU is invisible without membership of the `render` group,
+and it fails as though the device did not exist.
+
+**Solution:**
+
+```bash
+sudo usermod -aG render $USER   # then log out and back in
+```
+
+### First transcription after starting the daemon is slow
+
+This is expected and does not repeat. OpenVINO compiles the model for
+your specific device on first use, which costs about 1.5 s for `base.en`
+and 4 s for `large-v3-turbo` once the on-disk cache is warm, and far more
+on the very first run before that cache exists. Every transcription after
+that runs against the loaded model.
+
+The compiled model is cached under `$XDG_CACHE_HOME/voxtype/openvino`.
+Deleting that directory makes the next start pay full compilation again.
 
 ## Soniox Backend Issues
 

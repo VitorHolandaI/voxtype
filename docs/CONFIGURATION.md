@@ -1549,18 +1549,61 @@ Which Intel device runs inference. The string is passed to OpenVINO unchanged, s
 | `AUTO` | OpenVINO picks |
 | `HETERO:NPU,GPU` | Splits the graph: NPU first, iGPU for what it cannot take |
 
-**Measured on a Core Ultra 5 225H (Arrow Lake-H), Whisper base.en FP16, 4.75 s of audio:**
+### Measured performance
 
-| Path | Inference |
-|------|-----------|
-| `whisper` engine, Vulkan iGPU | 535 ms |
-| `openvino` engine, `device = "GPU"` | 250 ms |
-| `openvino` engine, `device = "NPU"` | 305 ms |
-| `openvino` engine, `device = "CPU"` | 706 ms |
+Core Ultra 5 225H (Arrow Lake-H), 60 clips from LibriSpeech test-clean
+(34 speakers, 367.8 s), on AC power. Every engine ran through the same
+harness, and every number below is steady state: the model is loaded
+once and the first transcription is discarded, because that is the state
+a running daemon is in. `model_manager` only evicts secondary models, so
+the primary model stays resident for the life of the daemon.
 
-With `large-v3-turbo` the iGPU gap widens to roughly 4x. On 21 minutes of real speech the iGPU stayed ahead of Vulkan by about 1.4x, with word error rate unchanged (13.69% vs 13.61%).
+**Dictation, one clip at a time (average clip 6.1 s):**
 
-The NPU works but is not recommended: it is slower than the iGPU on every model tested, its first compile of a large model took 107 seconds, and its energy per transcription measured no better than the iGPU's.
+| Engine | Warm median | p90 | WER |
+|--------|-------------|-----|-----|
+| `openvino`, `device = "GPU"`, base.en | 213 ms | 275 ms | 5.22% |
+| `openvino`, `device = "NPU"`, base.en | 244 ms | 299 ms | 5.12% |
+| `whisper` Vulkan, base.en | 590 ms | 682 ms | 4.72% |
+| `whisper` CPU AVX2, base.en | 959 ms | 1063 ms | 4.63% |
+| `openvino`, `device = "GPU"`, large-v3-turbo | 690 ms | 788 ms | 2.46% |
+| `whisper` Vulkan, large-v3-turbo | 5808 ms | 6594 ms | 2.56% |
+
+The comparison that matters for a dictation daemon is the last two rows
+against the third. OpenVINO running `large-v3-turbo` costs about the
+same wall time as Vulkan running `base.en` and roughly halves the word
+error rate. Through Vulkan, `large-v3-turbo` takes almost six seconds
+per clip, which is too slow to dictate against.
+
+**The same 367.8 s as one continuous file:**
+
+| Engine | Time | Faster than realtime | WER |
+|--------|------|----------------------|-----|
+| `openvino`, base.en | 10.6 s | 34.5x | 4.39% |
+| `whisper` Vulkan, base.en | 14.2 s | 25.8x | 5.47% |
+| `openvino`, large-v3-turbo | 21.1 s | 17.4x | 2.34% |
+| `whisper` Vulkan, large-v3-turbo | 94.5 s | 3.9x | 4.30% |
+
+The ratios shrink on long audio because most of the gap on short clips
+is fixed cost per call, not throughput. Timing the same audio cut to
+lengths from 3 s to 60 s separates the two: neither engine pads to
+Whisper's 30 s window, both scale with duration, and both step at 30 s
+for the second window.
+
+| | Fixed per call | Per second of audio |
+|---|---|---|
+| `whisper` Vulkan, base.en | 273 ms | 0.038 s |
+| `openvino`, base.en | 20 ms | 0.031 s |
+| `whisper` Vulkan, large-v3-turbo | ~4.2 s | 0.257 s |
+| `openvino`, large-v3-turbo | ~0.34 s | 0.057 s |
+
+On `base.en` the per-second rates are within 20% of each other and the
+whole advantage is the 13x lower fixed cost. On `large-v3-turbo` the
+rate itself is 4.5x better, so the gap survives on long audio too.
+
+The NPU is close to the iGPU in speed (244 ms against 213 ms) and its
+first compile of a large model took 107 seconds. It needs membership of
+the `render` group.
 
 **Using the NPU** additionally requires membership of the `render` group, or the device is silently absent:
 

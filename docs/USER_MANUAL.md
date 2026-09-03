@@ -97,14 +97,21 @@ voxtype --model small.en    # Use a different model
 voxtype --hotkey PAUSE      # Use different hotkey
 ```
 
-### `voxtype transcribe <file>`
+### `voxtype transcribe <file>...`
 
-Transcribe an audio file without running the daemon.
+Transcribe audio files without running the daemon.
 
 ```bash
 voxtype transcribe recording.wav
 voxtype --model large-v3 transcribe interview.wav  # Use specific model
+voxtype transcribe part1.wav part2.wav part3.wav   # One loaded model for all
 ```
+
+Several files share a single loaded model, so only the first pays for
+loading it. Each file prints how long its own transcription took, which
+makes this the way to see the speed you actually get from the daemon:
+the daemon keeps its model resident, so every transcription after the
+first is in that same warm state.
 
 Supported formats: WAV (16-bit PCM, 16kHz mono recommended)
 
@@ -804,7 +811,7 @@ Any valid evdev key name works. Common choices:
 
 ## Transcription Engines
 
-Voxtype supports seven speech-to-text engines. Whisper uses whisper.cpp and works with any binary variant. The other six engines run via ONNX Runtime and require an ONNX binary variant (`voxtype-*-onnx-*`).
+Voxtype supports several speech-to-text engines, in three families. Whisper uses whisper.cpp and works with any binary variant. Most of the others run via ONNX Runtime and require an ONNX binary variant (`voxtype-*-onnx-*`). OpenVINO runs Whisper models on Intel hardware through Intel's own runtime and requires the `voxtype-*-openvino` variant.
 
 | Engine | Best For | GPU Required | Languages |
 |--------|----------|--------------|-----------|
@@ -815,6 +822,7 @@ Voxtype supports seven speech-to-text engines. Whisper uses whisper.cpp and work
 | **Paraformer** | Chinese + English dictation | No | Chinese (with English code-switching) |
 | **Dolphin** | Dictation-optimized, fast CTC | No | Chinese + English |
 | **Omnilingual** | Broadest language coverage in ONNX engines | No | 50+ languages |
+| **OpenVINO** | Whisper on Intel iGPU or NPU, fastest option on Intel laptops | Intel iGPU or NPU | 99+ languages (same models as Whisper) |
 | **Cohere** | #1 Open ASR Leaderboard accuracy | Optional (CUDA via `cohere-cuda`) | Arabic, German, English, Spanish, French, Hindi, Italian, Japanese, Korean, Dutch, Portuguese, Russian, Turkish, Chinese (14) |
 
 ### Selecting an Engine
@@ -833,6 +841,9 @@ engine = "paraformer"
 engine = "dolphin"
 engine = "omnilingual"
 engine = "cohere"
+
+# Intel iGPU / NPU (requires openvino binary variant)
+engine = "openvino"
 ```
 
 **Via CLI flag** (overrides config):
@@ -846,9 +857,10 @@ voxtype --engine paraformer daemon
 voxtype --engine dolphin daemon
 voxtype --engine omnilingual daemon
 voxtype --engine cohere daemon
+voxtype --engine openvino daemon
 ```
 
-Valid `--engine` values: `whisper`, `parakeet`, `moonshine`, `sensevoice`, `paraformer`, `dolphin`, `omnilingual`, `cohere`.
+Valid `--engine` values: `whisper`, `parakeet`, `moonshine`, `sensevoice`, `paraformer`, `dolphin`, `omnilingual`, `cohere`, `openvino`.
 
 ### Switching to an ONNX Engine
 
